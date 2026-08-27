@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout wrapper
+        uses: actions/checkout@v4
+
+      - name: Download and verify upstream RTK v0.45.0 asset
+        shell: pwsh
+        env:
+          UPSTREAM_URL: https://github.com/rtk-ai/rtk/releases/download/v0.45.0/rtk-x86_64-pc-windows-msvc.zip
+          UPSTREAM_ASSET_SHA256: 34cea9009a8099acdaf85147b971d95f65efabfa63fb3aea7d3e2b73e6f517c3
+        run: |
+          Invoke-WebRequest -Uri $env:UPSTREAM_URL -OutFile upstream.zip -UseBasicParsing
+          $actual = (Get-FileHash -Algorithm SHA256 -Path upstream.zip).Hash.ToLower()
+          if ($actual -ne $env:UPSTREAM_ASSET_SHA256.ToLower()) {
+            throw "upstream SHA-256 mismatch: expected $env:UPSTREAM_ASSET_SHA256, got $actual"
+          }
+          Write-Output "upstream asset SHA-256 verified: $actual"
+          echo "UPSTREAM_ZIP=$PWD\upstream.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build the .orax artifact
+        shell: pwsh
+        run: |
+          ./scripts/build-orax.ps1
+          $orax = Get-ChildItem dist/*.orax | Select-Object -First 1
+          $sha = Get-Content "$($orax.FullName).sha256"
+          echo "ORAX_PATH=$($orax.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "ORAX_SHA256=$sha" | Out-File -FilePath $env:GITHUB_ENV -Append
+          echo "ORAX_NAME=$($orax.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Smoke test - extract and verify RTK version
+        shell: pwsh
+        run: |
+          $extract = Join-Path $env:TEMP "rtk-smoke-extract"
+          if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+          New-Item -ItemType Directory -Path $extract | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($env:ORAX_PATH, $extract)
+          $rtk = Join-Path $extract "assets\rtk.exe"
+          $version = & $rtk --version
+          if ($version -notmatch "0.45.0") { throw "expected RTK 0.45.0, got: $version" }
+          Write-Output "RTK version verified: $version"
+
+      - name: Smoke test - rtk-rewrite-v1 protocol contract
+        shell: pwsh
+        run: |
+          $extract = Join-Path $env:TEMP "rtk-smoke-extract"
+          $rtk = Join-Path $extract "assets\rtk.exe"
+          $db = Join-Path $env:TEMP "rtk-smoke-db"
+          $env:RTK_DB_DIR = $db
+          # "git status" must rewrite to "rtk git status" with exit 0 (Allow).
+          $out = & $rtk rewrite "git status" 2>&1
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { throw "rewrite of git status must exit 0 (Allow), got $code" }
+          if ($out -notmatch "rtk git status") { throw "rewrite output must contain 'rtk git status', got: $out" }
+          Write-Output "rtk-rewrite-v1 Allow contract verified (exit 0)"
+          # "echo hello" must passthrough with exit 1 (no rtk equivalent).
+          $null = & $rtk rewrite "echo hello" 2>&1
+          $code2 = $LASTEXITCODE
+          if ($code2 -ne 1) { throw "rewrite of echo hello must exit 1 (passthrough), got $code2" }
+          Write-Output "rtk-rewrite-v1 passthrough contract verified (exit 1)"
+
+      - name: Smoke test - process-local PATH resolves bare rtk
+        shell: pwsh
+        run: |
+          $extract = Join-Path $env:TEMP "rtk-smoke-extract"
+          $hookDir = Join-Path $extract "assets"
+          # Prepend only the Hook executable directory in this test process; never mutate the
+          # machine or user PATH.
+          $env:PATH = "$hookDir;$env:PATH"
+          $version = & rtk --version
+          if ($LASTEXITCODE -ne 0) { throw "bare rtk must resolve via process-local PATH, got exit $LASTEXITCODE" }
+          if ($version -notmatch "0.45.0") { throw "bare rtk must report 0.45.0, got: $version" }
+          Write-Output "process-local PATH smoke test verified: $version"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ORAX_PATH }}
+            ${{ env.ORAX_PATH }}.sha256
+          body: |
+            ## RTK Hook Plugin v0.1.0
+
+            Packages RTK `v0.45.0` (`x86_64-pc-windows-msvc`) as an Ora Hook Plugin.
+
+            ### Provenance
+            - Upstream tag: `v0.45.0`
+            - Upstream commit: `b34be37caf3796b69a50952a28e60e32b5daad43`
+            - Upstream asset: `rtk-x86_64-pc-windows-msvc.zip`
+            - Upstream asset SHA-256: `34cea9009a8099acdaf85147b971d95f65efabfa63fb3aea7d3e2b73e6f517c3`
+            - Final `.orax` SHA-256: `${{ env.ORAX_SHA256 }}`
+
+            ### Smoke tests passed
+            - RTK `--version` reports `0.45.0`.
+            `rtk-rewrite-v1` Allow contract: `git status` rewrites to `rtk git status` (exit 0).
+            `rtk-rewrite-v1` passthrough contract: `echo hello` exits 1.
+            process-local PATH resolves bare `rtk`.
+          draft: false
+          prerelease: false
