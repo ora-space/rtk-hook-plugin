@@ -50,8 +50,10 @@ jobs:
           [System.IO.Compression.ZipFile]::ExtractToDirectory($env:ORAX_PATH, $extract)
           $rtk = Join-Path $extract "assets\rtk.exe"
           $version = & $rtk --version
+          if ($LASTEXITCODE -ne 0) { throw "rtk --version must exit 0, got $LASTEXITCODE" }
           if ($version -notmatch "0.45.0") { throw "expected RTK 0.45.0, got: $version" }
           Write-Output "RTK version verified: $version"
+          exit 0
 
       - name: Smoke test - rtk-rewrite-v1 protocol contract
         shell: pwsh
@@ -75,6 +77,9 @@ jobs:
           $code2 = $LASTEXITCODE
           if ($code2 -ne 1) { throw "rewrite of echo hello must exit 1 (passthrough), got $code2" }
           Write-Output "rtk-rewrite-v1 passthrough contract verified (exit 1)"
+          # The last native command (rtk rewrite) exited 1 by contract; reset the step exit code so
+          # the workflow does not poison the step with that native exit code.
+          exit 0
 
       - name: Smoke test - process-local PATH resolves bare rtk
         shell: pwsh
@@ -88,6 +93,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "bare rtk must resolve via process-local PATH, got exit $LASTEXITCODE" }
           if ($version -notmatch "0.45.0") { throw "bare rtk must report 0.45.0, got: $version" }
           Write-Output "process-local PATH smoke test verified: $version"
+          exit 0
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
