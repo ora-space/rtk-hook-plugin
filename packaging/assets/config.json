@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "hook": {
+    "protocol": "rtk-rewrite-v1",
+    "executable": "assets/rtk.exe",
+    "command": "rtk",
+    "toolVersion": "0.45.0"
+  }
+}
