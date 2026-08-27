@@ -1,0 +1,12 @@
+resolver = 1
+title = "RTK"
+identifier = "rtk-ai.rtk"
+namespace = "official"
+kind = "hook"
+version = "0.1.0"
+description = "RTK command rewrite hook"
+homepage = "https://github.com/rtk-ai/rtk"
+license = "Apache-2.0"
+
+[artifact]
+target = "x86_64-pc-windows-msvc"
